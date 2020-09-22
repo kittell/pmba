@@ -71,6 +71,11 @@ class Model:
         self.time_current = self.time_start
         self.time_step = 1
         self.wet_ratio = 0.7
+        self.bins_wet = 3
+        self.bins_dry = 16
+        self.bins_wetdry = 8
+        self.bins_wetdry_dry = 0
+        self.bins_wetdry_wet = self.bins_wetdry - self.bins_wetdry_dry
         
         self.rf = ReceivingFacility(self.wet_ratio)
         
@@ -91,7 +96,7 @@ class Model:
         try:
             output += str(self.rf.truck_queue[0].berry_type)
         except:
-            output += ''
+            output += 'none'
         output += ','
         output += str(self.rf.truck_time_remaining)
     
