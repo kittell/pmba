@@ -1,10 +1,11 @@
 from random import randint
-from prompt_toolkit.key_binding.bindings.named_commands import self_insert
 
 class BulkTruck:
-    def __init__(self, berry_type):
-        self.load_avg = 75
+    def __init__(self, truck_id, berry_type):
+        self.truck_id = truck_id
         self.berry_type = berry_type
+        self.load_avg = 75
+        self.at_dumper = False
         
         if berry_type == 'wet':
             self.useful_ratio = 0.85
@@ -37,11 +38,36 @@ class DryBin(Bin):
     def __init__(self):
         self.berry_type = 'dry'
         self.volume = 250
-        
-class ReceivingFacility:
+
+class Dumper:
     def __init__(self, model_settings):
         self.dump_time_min = 5
         self.dump_time_max = 10
+        
+        self.initialize_dumper()
+        
+    def assign_truck(self, truck_id):
+        self.truck_id = truck_id
+        self.time_remaining = randint(self.dump_time_min, self.dump_time_max)
+        
+    def initialize_dumper(self):
+        self.truck_id = None
+        self.time_remaining = None
+    
+    def model_step(self, time_step):
+        if self.truck_id is not None:
+            if self.truck_id > 0:
+                self.time_remaining -= time_step
+        
+class ReceivingFacility:
+    def __init__(self, model_settings):
+        # Setup truck queue
+        self.truck_queue = TruckQueue(model_settings)
+        
+        # Setup dumpers
+        self.dumpers = dict()
+        for i in range(0, model_settings['dumpers']):
+            self.dumpers[i + 1] = Dumper(model_settings)
         
         # Setup bins
         self.bins_wet = list()
@@ -78,15 +104,41 @@ class ReceivingFacility:
             self.capacity_wet += b.volume
             self.bins_wet.append(b)
                      
-    
-    def get_dump_time(self):
-        return randint(self.dump_time_min, self.dump_time_max)
         
     def get_test_time(self):
         return 0
         
     def model_step(self, time_step):
+        self.truck_queue.model_step(time_step)
+        
+        for d in self.dumpers:
+            self.dumpers[d].model_step(time_step)
+        
         self.transfer_load_to_bin()
+        self.dismiss_trucks()
+        self.assign_trucks_to_dumpers()
+        
+    
+    def dismiss_trucks(self):
+        for d in self.dumpers:
+            truck_id = self.dumpers[d].truck_id
+            if truck_id is not None:
+                if self.dumpers[d].time_remaining <= 0:
+                    self.dumpers[d].initialize_dumper()
+                    self.truck_queue.truck_leaves(truck_id)
+    
+    def assign_trucks_to_dumpers(self):
+        # Find first open dumper
+        for truck in self.truck_queue:
+            # Find trucks that are not at a dumper
+            if truck.at_dumper == False:
+                # Find open dumper
+                for d in self.dumpers:
+                    if self.dumpers[d].truck_id is None:
+                        # Assign a truck to the empty dumper
+                        truck.at_dumper = True
+                        self.dumpers[d].assign_truck(truck.truck_id)
+                        
         
     def transfer_load_to_bin(self):
         pass
@@ -104,18 +156,14 @@ class ReceivingFacility:
 
 class TruckQueue(list):
     def __init__(self, model_settings):
-        self.time_remaining = list()
         
         self.wet_ratio = model_settings['wet_ratio']
         self.total_count = 0
         self.total_wait = 0
     
-    def model_step(self, time_step, model_settings):
-        if len(self) > 0:
-            self.time_remaining[0] -= time_step
-        
-        self.truck_leaves()
-        self.truck_arrives(model_settings)
+    def model_step(self, time_step):
+
+        self.truck_arrives()
         self.truck_waits(time_step)
     
     def truck_waits(self, time_step):
@@ -124,13 +172,16 @@ class TruckQueue(list):
         if waiting > 0:
             self.total_wait += time_step * waiting
     
-    def truck_arrives(self, model_settings):
+    def truck_arrives(self):
         # Rules for truck arrival
         #   - truck queue is empty
         arrives = False
-        if len(self) == 0:
-            arrives = True
+#         if len(self) == 0:
+#             arrives = True
 
+
+        # For now: a truck arrives every minute
+        arrives = True
         if arrives:
             self.total_count += 1
             
@@ -139,14 +190,14 @@ class TruckQueue(list):
             if r > self.wet_ratio:
                 berry_type = 'dry'
             
-            self.append(BulkTruck(berry_type))
-            self.time_remaining.append(model_settings['dump_time'] + model_settings['test_time'])
+            self.append(BulkTruck(self.total_count, berry_type))
+#             self.time_remaining.append(model_settings['dump_time'] + model_settings['test_time'])
     
-    def truck_leaves(self):
-        if len(self) > 0:
-            if self.time_remaining[0] == 0:
-                self.pop(0)
-                self.time_remaining.pop(0)
+    def truck_leaves(self, remove_id):
+        for t in range(len(self)):
+            if self[t].truck_id == remove_id:
+                self.pop(t)
+                break
                 
                 
     def print_output(self):
@@ -173,7 +224,7 @@ class Model:
         self.model_settings['wet_ratio'] = 0.7
         
         # Receiving
-        
+        self.model_settings['dumpers'] = 5
         
         # Holding
         self.model_settings['bins_wet'] = 3
@@ -189,13 +240,11 @@ class Model:
         # Bulking and bagging
         
         # INITIALIZE
-        self.truck_queue = TruckQueue(self.model_settings)
         self.receiving = ReceivingFacility(self.model_settings)
         
     def model_step(self):
         self.update_random_model_settings()
-        self.truck_queue.model_step(self.time_step, self.model_settings)
-        self.receiving.model_step(self.time_step, self.truck_queue)
+        self.receiving.model_step(self.time_step)
     
     def model_run(self):
         self.print_output()
@@ -205,8 +254,9 @@ class Model:
             self.print_output()
         
     def update_random_model_settings(self):
-        self.model_settings['dump_time'] = self.receiving.get_dump_time()
-        self.model_settings['test_time'] = self.receiving.get_test_time()
+#         self.model_settings['dump_time'] = self.receiving.get_dump_time()
+#         self.model_settings['test_time'] = self.receiving.get_test_time()
+        pass
         
     def get_test_time(self):
         return 0
@@ -216,7 +266,7 @@ class Model:
         output += str(self.time_current)
         
         output += '; '
-        output += self.truck_queue.print_output()
+        output += self.receiving.truck_queue.print_output()
         
         output += '; '
         output += self.receiving.print_output()
